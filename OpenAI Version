@@ -1,0 +1,493 @@
+Option Explicit
+
+' Add reference to Microsoft Scripting Runtime for Dictionary
+' Tools > References > Microsoft Scripting Runtime
+
+Private Const OPENAI_API_KEY As String = "YOUR OPEN AI API KEY HERE"
+Private Const OPENAI_API_URL As String = "https://api.openai.com/v1/responses"
+
+Sub GenerateWeeklyMeetingBriefings_OpenAI()
+    ' Main procedure - run this on Monday mornings
+    
+    Dim olApp As Outlook.Application
+    Dim olNS As Outlook.NameSpace
+    Dim calFolder As Outlook.Folder
+    Dim calItems As Outlook.Items
+    Dim appt As Outlook.AppointmentItem
+    
+    Dim startDate As Date
+    Dim endDate As Date
+    Dim briefings As String
+    Dim meetingCount As Integer
+    
+    ' Initialize
+    Set olApp = Outlook.Application
+    Set olNS = olApp.GetNamespace("MAPI")
+    Set calFolder = olNS.GetDefaultFolder(olFolderCalendar)
+    
+    ' Get this week's date range (Monday to Friday)
+    startDate = Date ' Today (Monday)
+    endDate = Date + 4 ' Friday
+    
+    ' Filter calendar items
+    Set calItems = calFolder.Items
+    calItems.Sort "[Start]"
+    calItems.IncludeRecurrences = True
+    
+    Dim filterStr As String
+    filterStr = "[Start] >= '" & Format(startDate, "mm/dd/yyyy") & "' AND [Start] <= '" & Format(endDate + 1, "mm/dd/yyyy") & "'"
+    Set calItems = calItems.Restrict(filterStr)
+    
+    ' Start building email with improved formatting
+    briefings = "<html><head><style>body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }</style></head>"
+    briefings = briefings & "<body style='background-color: #f0f0f0; padding: 20px;'>"
+    briefings = briefings & "<div style='max-width: 900px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);'>"
+    briefings = briefings & "<h1 style='color: #10A37F; border-bottom: 3px solid #10A37F; padding-bottom: 10px;'>Weekly Meeting Briefings</h1>"
+    briefings = briefings & "<p style='font-size: 16px; color: #666;'>Week of " & Format(startDate, "mmmm dd, yyyy") & "</p>"
+    
+    meetingCount = 0
+    
+    ' Loop through meetings
+    For Each appt In calItems
+        If TypeOf appt Is Outlook.AppointmentItem Then
+            ' Check if meeting has "Briefing Required" category
+            If InStr(1, appt.Categories, "Briefing Required", vbTextCompare) > 0 Then
+                briefings = briefings & GenerateMeetingBriefing_OpenAI(appt)
+                meetingCount = meetingCount + 1
+                DoEvents ' Keep Outlook responsive
+            End If
+        End If
+    Next appt
+    
+    ' Add summary and close HTML
+    briefings = briefings & "<div style='background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin-top: 30px;'>"
+    briefings = briefings & "<p style='margin: 0;'><strong>Total briefings generated:</strong> " & meetingCount & " meeting(s)</p>"
+    briefings = briefings & "<p style='margin: 5px 0 0 0; color: #666;'><strong>Generated:</strong> " & Format(Now, "dddd, mmmm dd, yyyy hh:mm AM/PM") & "</p>"
+    briefings = briefings & "<p style='margin: 5px 0 0 0; font-style: italic; color: #888;'>Powered by OpenAI GPT-4</p>"
+    briefings = briefings & "</div>"
+    briefings = briefings & "</div></body></html>"
+    
+    ' Send email with briefings
+    If meetingCount > 0 Then
+        SendBriefingEmail_OpenAI briefings, meetingCount
+        MsgBox "Generated " & meetingCount & " meeting briefings and sent email.", vbInformation
+    Else
+        MsgBox "No meetings requiring briefings found this week.", vbInformation
+    End If
+    
+    ' Cleanup
+    Set calItems = Nothing
+    Set calFolder = Nothing
+    Set olNS = Nothing
+    Set olApp = Nothing
+End Sub
+
+Function NeedsBriefing_OpenAI(appt As Outlook.AppointmentItem) As Boolean
+    ' Simple check for "Briefing Required" category
+    NeedsBriefing_OpenAI = (InStr(1, appt.Categories, "Briefing Required", vbTextCompare) > 0)
+End Function
+
+Function GenerateMeetingBriefing_OpenAI(appt As Outlook.AppointmentItem) As String
+    Dim prompt As String
+    Dim openAIResponse As String
+    Dim briefingHTML As String
+    
+    ' Build context for OpenAI
+    prompt = BuildMeetingPrompt_OpenAI(appt)
+    
+     ' Call OpenAI API
+    openAIResponse = CallOpenAIAPI(prompt)
+    
+    ' Make it HTML-line-break friendly
+    openAIResponse = ConvertNewlinesToHtml(openAIResponse)
+    
+    ' Format with much better spacing and visual hierarchy
+    briefingHTML = "<div style='margin-bottom: 40px; border: 2px solid #10A37F; border-radius: 8px; padding: 25px; background-color: #f8f9fa;'>"
+    
+    ' Meeting header section
+    briefingHTML = briefingHTML & "<div style='background-color: #10A37F; color: white; padding: 15px; margin: -25px -25px 20px -25px; border-radius: 6px 6px 0 0;'>"
+    briefingHTML = briefingHTML & "<h2 style='margin: 0; font-size: 20px;'>" & appt.subject & "</h2>"
+    briefingHTML = briefingHTML & "</div>"
+    
+    ' Meeting details section
+    briefingHTML = briefingHTML & "<div style='background-color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px;'>"
+    briefingHTML = briefingHTML & "<table style='width: 100%; border-collapse: collapse;'>"
+    briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold; width: 120px;'>?? Date/Time:</td><td style='padding: 8px 0;'>" & Format(appt.Start, "dddd, mmmm dd, yyyy hh:mm AM/PM") & "</td></tr>"
+    briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold;'>?? Duration:</td><td style='padding: 8px 0;'>" & DateDiff("n", appt.Start, appt.End) & " minutes</td></tr>"
+    
+    If appt.Recipients.Count > 0 Then
+        briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold; vertical-align: top;'>?? Attendees:</td><td style='padding: 8px 0;'>" & GetAttendeeList_OpenAI(appt) & "</td></tr>"
+    End If
+    
+    If Len(appt.Location) > 0 Then
+        briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold;'>?? Location:</td><td style='padding: 8px 0;'>" & appt.Location & "</td></tr>"
+    End If
+    
+    briefingHTML = briefingHTML & "</table>"
+    briefingHTML = briefingHTML & "</div>"
+    
+    ' Briefing content section
+    briefingHTML = briefingHTML & "<div style='background-color: white; padding: 20px; border-radius: 5px; line-height: 1.6;'>"
+    briefingHTML = briefingHTML & openAIResponse
+    briefingHTML = briefingHTML & "</div>"
+    briefingHTML = briefingHTML & "</div>"
+    
+    GenerateMeetingBriefing_OpenAI = briefingHTML
+End Function
+
+Function BuildMeetingPrompt_OpenAI(appt As Outlook.AppointmentItem) As String
+    Dim prompt As String
+    Dim attendeeList As String
+    Dim meetingType As String
+    
+    attendeeList = GetAttendeeList_OpenAI(appt)
+    
+    ' Determine meeting type for tailored research
+    meetingType = DetermineMeetingType_OpenAI(appt)
+    
+    ' Build deep research prompt similar to your examples
+prompt = "I have an upcoming meeting. Look to the attendees that are not INSERT YOUR NAME HERE and not anyone from INSERT YOUR EMAIL DOMAIN HERE. Make me an in depth briefing package ahead of my meeting. Sometimes the attendees and firms appear in the subject line or description of the meeting. Make sure you check there too"
+    
+    prompt = prompt & "MEETING CONTEXT:" & vbCrLf
+    prompt = prompt & "Subject: " & appt.subject & vbCrLf
+    prompt = prompt & "Date/Time: " & Format(appt.Start, "dddd, mmmm dd, yyyy hh:mm AM/PM") & vbCrLf
+    prompt = prompt & "Duration: " & DateDiff("n", appt.Start, appt.End) & " minutes" & vbCrLf
+    
+    If appt.Recipients.Count > 0 Then
+        prompt = prompt & "Meeting Participants: " & attendeeList & vbCrLf
+    End If
+    
+    If Len(appt.body) > 0 Then
+        prompt = prompt & "Meeting Description: " & Left(appt.body, 1000) & vbCrLf
+    End If
+    
+    prompt = prompt & vbCrLf & "RESEARCH REQUIREMENTS:" & vbCrLf & vbCrLf
+    
+    ' Customize based on meeting type
+ Select Case meetingType
+        Case "EXPANSION SPACE FOR SPECIFIC MEEETING TYPES 1"
+          
+            
+        Case "EXPANSION SPACE FOR SPECIFIC MEEETING TYPES 2"
+    
+            
+            
+        Case Else ' General  Meeting
+            prompt = prompt & "1. **Detailed Biography**: Give me a summary of backgrounds for all attendees: prior and current firms, any notable publications, and professional accomplishments." & vbCrLf
+            prompt = prompt & "2. **News / Media search**: Do a thorough social media, and news search for all attendees. Summarize those findings for each attendee" & vbCrLf
+            prompt = prompt & "3. **Litigations and Controversies Search**: Do a thorough litigation and controverises search for all attendees. Summarize those findings for each attendee" & vbCrLf
+            prompt = prompt & "4. **Only if the attendees appear to manage an investment fund**: Give me a historical timeline of funds they raised with amounts. Describe their investment strategy, and give me 3-5 sentences on any notable deals you find." & vbCrLf
+            prompt = prompt & "5. **Anything Extra**: Tell me anything else interesting I should know ahead of this meeting" & vbCrLf
+    End Select
+    
+
+    
+prompt = prompt & vbCrLf & "FORMAT REQUIREMENTS:" & vbCrLf
+prompt = prompt & "- Return **pure HTML only**, no markdown." & vbCrLf
+prompt = prompt & "- Use <h3> for major sections and <h4> for subsections." & vbCrLf
+prompt = prompt & "- Use <p> for paragraphs." & vbCrLf
+prompt = prompt & "- Use <ul><li>...</li></ul> for bullet lists (do NOT start bullets with '- ')." & vbCrLf
+prompt = prompt & "- Use <strong> and <em> instead of ** ** or * *." & vbCrLf
+prompt = prompt & "- Use <a href='URL'>link text</a> for links." & vbCrLf
+prompt = prompt & "- Include <br><br> between logical blocks if useful for spacing." & vbCrLf
+prompt = prompt & "- Give me more detail rather than less; include dates and amounts where possible. Do not editorialize or give me suggestions. Just stick to factual information you have." & vbCrLf
+    
+    BuildMeetingPrompt_OpenAI = prompt
+End Function
+
+Function DetermineMeetingType_OpenAI(appt As Outlook.AppointmentItem) As String
+    ' Intelligently determine meeting type based on subject and content
+    Dim subject As String
+    Dim body As String
+    
+    subject = LCase(appt.subject)
+    body = LCase(appt.body)
+    
+    ' Check for investment-related keywords
+    If InStr(subject, "invest") > 0 Or InStr(subject, "due diligence") > 0 Or _
+       InStr(subject, "diligence") > 0 Or InStr(subject, "deal") > 0 Or _
+       InStr(subject, "portfolio") > 0 Then
+        DetermineMeetingType_OpenAI = "Investment Review"
+        
+    ' Check for reference call keywords
+    ElseIf InStr(subject, "reference") > 0 Or InStr(subject, "background") > 0 Or _
+           InStr(body, "reference call") > 0 Then
+        DetermineMeetingType_OpenAI = "Reference Call"
+        
+    ' Check for fund intro keywords
+    ElseIf InStr(subject, "fund") > 0 Or InStr(subject, "introduction") > 0 Or _
+           InStr(subject, "pitch") > 0 Or InStr(subject, "strategy") > 0 Then
+        DetermineMeetingType_OpenAI = "Fund Introduction"
+        
+    Else
+        DetermineMeetingType_OpenAI = "General"
+    End If
+End Function
+
+Function ExtractOpenAIContent(jsonResponse As String) As String
+    ' Extract assistant text from an OpenAI Responses API JSON response.
+    ' Strategy:
+    '   - Find the item with "type":"output_text"
+    '   - Within that item, find the "text" field
+    '   - Extract and unescape the JSON string value
+
+    On Error GoTo FailHandler
+
+    Dim typePos As Long
+    Dim textPos As Long
+    Dim colonPos As Long
+    Dim quotePos As Long
+    Dim startPos As Long
+    Dim i As Long
+    Dim ch As String
+    Dim inEscape As Boolean
+    Dim content As String
+
+    ' 1) Find the "output_text" item: "type":"output_text"
+    typePos = InStr(1, jsonResponse, """type"":""output_text""")
+    If typePos = 0 Then
+        typePos = InStr(1, jsonResponse, """type"": ""output_text""")
+    End If
+
+    If typePos = 0 Then
+        ExtractOpenAIContent = "<p style='color: red;'>Could not find output_text item in response</p>"
+        Exit Function
+    End If
+
+    ' 2) From there, find the "text" key
+    textPos = InStr(typePos, jsonResponse, """text""")
+    If textPos = 0 Then
+        ExtractOpenAIContent = "<p style='color: red;'>Could not find text field in output_text item</p>"
+        Exit Function
+    End If
+
+    ' 3) Find the colon after "text"
+    colonPos = InStr(textPos, jsonResponse, ":")
+    If colonPos = 0 Then
+        ExtractOpenAIContent = "<p style='color: red;'>Could not find ':' after text key</p>"
+        Exit Function
+    End If
+
+    ' 4) Find the opening quote for the text value
+    quotePos = InStr(colonPos, jsonResponse, """")
+    If quotePos = 0 Then
+        ExtractOpenAIContent = "<p style='color: red;'>Could not find opening quote for text value</p>"
+        Exit Function
+    End If
+
+    startPos = quotePos + 1
+
+    ' 5) Scan forward until we hit an unescaped closing quote
+    i = startPos
+    inEscape = False
+    content = ""
+
+    Do While i <= Len(jsonResponse)
+        ch = Mid$(jsonResponse, i, 1)
+
+        If inEscape Then
+            inEscape = False
+        ElseIf ch = "\" Then
+            inEscape = True
+        ElseIf ch = """" Then
+            ' End of JSON string
+            content = Mid$(jsonResponse, startPos, i - startPos)
+            Exit Do
+        End If
+
+        i = i + 1
+    Loop
+
+    If content = "" Then
+        ExtractOpenAIContent = "<p style='color: red;'>Could not find closing quote for text value</p>"
+        Exit Function
+    End If
+
+    ' 6) Unescape JSON sequences
+
+    ' Newlines / carriage returns
+    content = Replace(content, "\r\n", vbCrLf)
+    content = Replace(content, "\n", vbCrLf)
+    content = Replace(content, "\r", "")
+
+    ' Tabs
+    content = Replace(content, "\t", vbTab)
+
+    ' \" -> "
+    content = Replace(content, "\" & Chr(34), Chr(34))
+
+    ' \/ -> /
+    content = Replace(content, "\/", "/")
+
+    ' Decode \uXXXX -> actual Unicode characters
+    content = DecodeJsonUnicodeEscapes(content)
+
+    ' \\ -> \
+    content = Replace(content, "\\", "\")
+
+    ExtractOpenAIContent = content
+    Exit Function
+
+FailHandler:
+    ExtractOpenAIContent = "<p style='color: red;'>Error parsing response: " & Err.Description & "</p>"
+End Function
+
+Function GetAttendeeList_OpenAI(appt As Outlook.AppointmentItem) As String
+    ' Build comma-separated list of attendees
+    
+    Dim recipient As Outlook.recipient
+    Dim attendeeList As String
+    
+    For Each recipient In appt.Recipients
+        If Len(attendeeList) > 0 Then attendeeList = attendeeList & ", "
+        attendeeList = attendeeList & recipient.Name
+    Next recipient
+    
+    GetAttendeeList_OpenAI = attendeeList
+End Function
+
+Sub SendBriefingEmail_OpenAI(briefingsHTML As String, meetingCount As Integer)
+    Dim olApp As Outlook.Application
+    Dim olMail As Outlook.MailItem
+    
+    Set olApp = Outlook.Application
+    Set olMail = olApp.CreateItem(olMailItem)
+    
+    With olMail
+        .To = "ahemmingsen@horvitz.com"  ' Put your email address here
+        .subject = "Weekly Meeting Briefings (OpenAI) - " & meetingCount & " Meetings - Week of " & Format(Date, "mmmm dd, yyyy")
+        .HTMLBody = briefingsHTML
+        .Send  ' Sends automatically
+    End With
+    
+    Set olMail = Nothing
+    Set olApp = Nothing
+End Sub
+
+Function CallOpenAIAPI(prompt As String) As String
+    ' Make API call to OpenAI Responses API using GPT-5.1 with web search enabled.
+    ' Requires:
+    '   Const OPENAI_API_URL = "https://api.openai.com/v1/responses"
+    '   Const OPENAI_API_KEY = "sk-..."
+    '   JsonEncode_OpenAI function
+    '   ExtractOpenAIContent function
+
+    On Error GoTo ErrorHandler
+
+    Dim http As Object
+    Set http = CreateObject("MSXML2.XMLHTTP")
+
+    Dim jsonBody As String
+
+    ' Build a Responses API request body
+    ' Web search is enabled via the tools array.
+    jsonBody = _
+        "{""model"":""gpt-5.1""," & _
+        """input"":" & JsonEncode_OpenAI(prompt) & "," & _
+        """max_output_tokens"":8000," & _
+        """reasoning"":{""effort"":""medium""}," & _
+        """tools"":[{""type"":""web_search""}]" & _
+        "}"
+
+    ' Make the request
+    http.Open "POST", OPENAI_API_URL, False
+    http.SetRequestHeader "Content-Type", "application/json"
+    http.SetRequestHeader "Authorization", "Bearer " & OPENAI_API_KEY
+    http.Send jsonBody
+
+    ' Parse response
+    If http.Status = 200 Then
+        Dim responseText As String
+        responseText = http.responseText
+
+        CallOpenAIAPI = ExtractOpenAIContent(responseText)
+    Else
+        CallOpenAIAPI = "<p style='color: red;'>Error calling OpenAI API: " & http.Status & " - " & http.responseText & "</p>"
+    End If
+
+    Set http = Nothing
+    Exit Function
+
+ErrorHandler:
+    CallOpenAIAPI = "<p style='color: red;'>Error: " & Err.Description & "</p>"
+End Function
+
+
+Function JsonEncode_OpenAI(ByVal value As String) As String
+    ' Encode a VBA string as a JSON string literal for OpenAI
+    ' Returns the value wrapped in double quotes and with
+    ' special characters escaped (", \, newlines, tabs, etc.)
+    
+    Dim s As String
+    s = value
+    
+    ' Order matters:
+    ' 1) Escape backslashes
+    s = Replace(s, "\", "\\")
+    
+    ' 2) Escape double quotes
+    s = Replace(s, Chr(34), "\" & Chr(34))   ' " -> \"
+    
+    ' 3) Newlines and carriage returns -> \n
+    s = Replace(s, vbCrLf, "\n")
+    s = Replace(s, vbCr, "\n")
+    s = Replace(s, vbLf, "\n")
+    
+    ' 4) Tabs -> \t
+    s = Replace(s, vbTab, "\t")
+    
+    ' Wrap in double quotes to make it a JSON string literal
+    JsonEncode_OpenAI = Chr(34) & s & Chr(34)
+End Function
+
+Function DecodeJsonUnicodeEscapes(ByVal s As String) As String
+    ' Convert \uXXXX sequences in a JSON string into actual Unicode characters.
+    ' Handles BMP code points; surrogate pairs will appear as two chars (usually fine for text/HTML).
+
+    Dim i As Long
+    Dim n As Long
+    Dim ch As String
+    Dim hexCode As String
+    Dim result As String
+
+    n = Len(s)
+    i = 1
+
+    Do While i <= n
+        ch = Mid$(s, i, 1)
+
+        If ch = "\" And i + 5 <= n And Mid$(s, i + 1, 1) = "u" Then
+            ' Potential \uXXXX sequence
+            hexCode = Mid$(s, i + 2, 4)
+
+            If hexCode Like "[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]" Then
+                ' Valid hex, convert to Unicode char
+                result = result & ChrW$(CLng("&H" & hexCode))
+                i = i + 6   ' Skip \ u X X X X
+            Else
+                ' Not a valid \uXXXX, keep the backslash as-is
+                result = result & ch
+                i = i + 1
+            End If
+        Else
+            result = result & ch
+            i = i + 1
+        End If
+    Loop
+
+    DecodeJsonUnicodeEscapes = result
+End Function
+
+
+Function ConvertNewlinesToHtml(ByVal text As String) As String
+    Dim s As String
+    s = text
+    
+    ' Double line breaks -> blank line (extra spacing)
+    s = Replace(s, vbCrLf & vbCrLf, "<br><br>")
+    
+    ' Single line breaks -> simple line break
+    s = Replace(s, vbCrLf, "<br>")
+    
+    ConvertNewlinesToHtml = s
+End Function
