@@ -1,0 +1,337 @@
+Option Explicit
+
+' Add reference to Microsoft Scripting Runtime for Dictionary
+' Tools > References > Microsoft Scripting Runtime
+
+Private Const CLAUDE_API_KEY As String = "INSERT YOUR API KEY HERE"
+Private Const CLAUDE_API_URL As String = "https://api.anthropic.com/v1/messages"
+
+Sub GenerateWeeklyMeetingBriefingsClaude()
+    ' Main procedure - run this on Monday mornings
+    
+    Dim olApp As Outlook.Application
+    Dim olNS As Outlook.NameSpace
+    Dim calFolder As Outlook.Folder
+    Dim calItems As Outlook.Items
+    Dim appt As Outlook.AppointmentItem
+    
+    Dim startDate As Date
+    Dim endDate As Date
+    Dim briefings As String
+    Dim meetingCount As Integer
+    
+    ' Initialize
+    Set olApp = Outlook.Application
+    Set olNS = olApp.GetNamespace("MAPI")
+    Set calFolder = olNS.GetDefaultFolder(olFolderCalendar)
+    
+    ' Get this week's date range (Monday to Friday)
+    startDate = Date ' Today (Monday)
+    endDate = Date + 4 ' Friday
+    
+    ' Filter calendar items
+    Set calItems = calFolder.Items
+    calItems.Sort "[Start]"
+    calItems.IncludeRecurrences = True
+    
+    Dim filterStr As String
+    filterStr = "[Start] >= '" & Format(startDate, "mm/dd/yyyy") & "' AND [Start] <= '" & Format(endDate + 1, "mm/dd/yyyy") & "'"
+    Set calItems = calItems.Restrict(filterStr)
+    
+    ' Start building email with improved formatting
+    briefings = "<html><head><style>body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }</style></head>"
+    briefings = briefings & "<body style='background-color: #f0f0f0; padding: 20px;'>"
+    briefings = briefings & "<div style='max-width: 900px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);'>"
+    briefings = briefings & "<h1 style='color: #4A90E2; border-bottom: 3px solid #4A90E2; padding-bottom: 10px;'>Weekly Meeting Briefings</h1>"
+    briefings = briefings & "<p style='font-size: 16px; color: #666;'>Week of " & Format(startDate, "mmmm dd, yyyy") & "</p>"
+    
+    meetingCount = 0
+    
+    ' Loop through meetings
+    For Each appt In calItems
+        If TypeOf appt Is Outlook.AppointmentItem Then
+            ' Check if meeting has "Briefing Required" category
+            If InStr(1, appt.Categories, "Briefing Required", vbTextCompare) > 0 Then
+                briefings = briefings & GenerateMeetingBriefing(appt)
+                meetingCount = meetingCount + 1
+                DoEvents ' Keep Outlook responsive
+            End If
+        End If
+    Next appt
+    
+    ' Add summary and close HTML
+    briefings = briefings & "<div style='background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin-top: 30px;'>"
+    briefings = briefings & "<p style='margin: 0;'><strong>Total briefings generated:</strong> " & meetingCount & " meeting(s)</p>"
+    briefings = briefings & "<p style='margin: 5px 0 0 0; color: #666;'><strong>Generated:</strong> " & Format(Now, "dddd, mmmm dd, yyyy hh:mm AM/PM") & "</p>"
+    briefings = briefings & "<p style='margin: 5px 0 0 0; font-style: italic; color: #888;'>Powered by Claude AI</p>"
+    briefings = briefings & "</div>"
+    briefings = briefings & "</div></body></html>"
+    
+    ' Send email with briefings
+    If meetingCount > 0 Then
+        SendBriefingEmail briefings, meetingCount
+        MsgBox "Generated " & meetingCount & " meeting briefings and sent email.", vbInformation
+    Else
+        MsgBox "No meetings requiring briefings found this week.", vbInformation
+    End If
+    
+    ' Cleanup
+    Set calItems = Nothing
+    Set calFolder = Nothing
+    Set olNS = Nothing
+    Set olApp = Nothing
+End Sub
+
+Function NeedsBriefing(appt As Outlook.AppointmentItem) As Boolean
+    ' Simple check for "Briefing Required" category
+    NeedsBriefing = (InStr(1, appt.Categories, "Briefing Required", vbTextCompare) > 0)
+End Function
+
+Function GenerateMeetingBriefing(appt As Outlook.AppointmentItem) As String
+    Dim prompt As String
+    Dim claudeResponse As String
+    Dim briefingHTML As String
+    
+    ' Build context for Claude
+    prompt = BuildMeetingPrompt(appt)
+    
+    ' Call Claude API
+    claudeResponse = CallClaudeAPI(prompt)
+    
+    ' Format with much better spacing and visual hierarchy
+    briefingHTML = "<div style='margin-bottom: 40px; border: 2px solid #4A90E2; border-radius: 8px; padding: 25px; background-color: #f8f9fa;'>"
+    
+    ' Meeting header section
+    briefingHTML = briefingHTML & "<div style='background-color: #4A90E2; color: white; padding: 15px; margin: -25px -25px 20px -25px; border-radius: 6px 6px 0 0;'>"
+    briefingHTML = briefingHTML & "<h2 style='margin: 0; font-size: 20px;'>" & appt.subject & "</h2>"
+    briefingHTML = briefingHTML & "</div>"
+    
+    ' Meeting details section
+    briefingHTML = briefingHTML & "<div style='background-color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px;'>"
+    briefingHTML = briefingHTML & "<table style='width: 100%; border-collapse: collapse;'>"
+    briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold; width: 120px;'>?? Date/Time:</td><td style='padding: 8px 0;'>" & Format(appt.Start, "dddd, mmmm dd, yyyy hh:mm AM/PM") & "</td></tr>"
+    briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold;'>?? Duration:</td><td style='padding: 8px 0;'>" & DateDiff("n", appt.Start, appt.End) & " minutes</td></tr>"
+    
+    If appt.Recipients.Count > 0 Then
+        briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold; vertical-align: top;'>?? Attendees:</td><td style='padding: 8px 0;'>" & GetAttendeeList(appt) & "</td></tr>"
+    End If
+    
+    If Len(appt.Location) > 0 Then
+        briefingHTML = briefingHTML & "<tr><td style='padding: 8px 0; font-weight: bold;'>?? Location:</td><td style='padding: 8px 0;'>" & appt.Location & "</td></tr>"
+    End If
+    
+    briefingHTML = briefingHTML & "</table>"
+    briefingHTML = briefingHTML & "</div>"
+    
+    ' Briefing content section
+    briefingHTML = briefingHTML & "<div style='background-color: white; padding: 20px; border-radius: 5px; line-height: 1.6;'>"
+    briefingHTML = briefingHTML & claudeResponse
+    briefingHTML = briefingHTML & "</div>"
+    
+    briefingHTML = briefingHTML & "</div>"
+    
+    GenerateMeetingBriefing = briefingHTML
+End Function
+
+Function BuildMeetingPrompt(appt As Outlook.AppointmentItem) As String
+    Dim prompt As String
+    Dim attendeeList As String
+    Dim meetingType As String
+    
+    attendeeList = GetAttendeeList(appt)
+    
+    ' Determine meeting type for tailored research
+    meetingType = DetermineMeetingType(appt)
+    
+    ' Build deep research prompt similar to your examples
+  prompt = "I have an upcoming meeting. Look to the attendees that are not INSERT YOUR NAME HERE and not anyone from INSERT YOUR EMAIL DOMAIN HERE. Make me an in depth briefing package ahead of my meeting. Sometimes the attendees and firms appear in the subject line or description of the meeting. Make sure you check there too"
+  
+    prompt = prompt & "MEETING CONTEXT:" & vbCrLf
+    prompt = prompt & "Subject: " & appt.subject & vbCrLf
+    prompt = prompt & "Date/Time: " & Format(appt.Start, "dddd, mmmm dd, yyyy hh:mm AM/PM") & vbCrLf
+    prompt = prompt & "Duration: " & DateDiff("n", appt.Start, appt.End) & " minutes" & vbCrLf
+    
+    If appt.Recipients.Count > 0 Then
+        prompt = prompt & "Meeting Participants: " & attendeeList & vbCrLf
+    End If
+    
+    If Len(appt.body) > 0 Then
+        prompt = prompt & "Meeting Description: " & Left(appt.body, 1000) & vbCrLf
+    End If
+    
+    prompt = prompt & vbCrLf & "RESEARCH REQUIREMENTS:" & vbCrLf & vbCrLf
+    
+    ' Customize based on meeting type
+    Select Case meetingType
+        Case "EXPANSION SPACE FOR SPECIFIC MEEETING TYPES 1"
+      
+            
+        Case "EXPANSION SPACE FOR SPECIFIC MEEETING TYPES 2"
+          
+            
+        Case Else ' General Meeting
+            prompt = prompt & "1. **Detailed Biography**: Give me a summary of backgrounds for all attendees: prior and current firms, any notable publications, and professional accomplishments." & vbCrLf
+            prompt = prompt & "2. **News / Media Review**: Review and summarize any social media or historical news for all attendees. Summarize those findings for each attendee" & vbCrLf
+            prompt = prompt & "3. **Litigations and Controversies **: Do a thorough litigation and controverises review for all attendees. Summarize those findings for each attendee" & vbCrLf
+            prompt = prompt & "4. **Only include this if the attendees appear to manage an investment fund**: Give me a historical timeline of funds they raised with amounts. Describe their investment strategy, and give me 3-5 sentences on any notable deals you find." & vbCrLf
+            prompt = prompt & "5. **Anything Extra**: Tell me anything else interesting I should know ahead of this meeting" & vbCrLf
+    End Select
+    
+
+    
+    prompt = prompt & vbCrLf & "FORMAT REQUIREMENTS:" & vbCrLf
+    prompt = prompt & "- Use clear HTML formatting with <h3> for major sections and <h4> for subsections" & vbCrLf
+  '  prompt = prompt & "- Use bullet points (<ul><li>) for lists" & vbCrLf
+   prompt = prompt & "- Give me more detail rather than less." & vbCrLf
+    prompt = prompt & "- Give me dates, amounts" & vbCrLf
+    prompt = prompt & "- Include <br><br> between sections for readability" & vbCrLf
+    prompt = prompt & "- Cite sources where possible and provide links" & vbCrLf
+'    prompt = prompt & "- Be specific and actionable - avoid generic advice" & vbCrLf
+    
+    BuildMeetingPrompt = prompt
+End Function
+
+Function DetermineMeetingType(appt As Outlook.AppointmentItem) As String
+    ' Intelligently determine meeting type based on subject and content
+    Dim subject As String
+    Dim body As String
+    
+    subject = LCase(appt.subject)
+    body = LCase(appt.body)
+    
+    ' Check for investment-related keywords
+    If InStr(subject, "invest") > 0 Or InStr(subject, "due diligence") > 0 Or _
+       InStr(subject, "diligence") > 0 Or InStr(subject, "deal") > 0 Or _
+       InStr(subject, "portfolio") > 0 Then
+        DetermineMeetingType = "Investment Review"
+        
+    ' Check for reference call keywords
+    ElseIf InStr(subject, "reference") > 0 Or InStr(subject, "background") > 0 Or _
+           InStr(body, "reference call") > 0 Then
+        DetermineMeetingType = "Reference Call"
+        
+    ' Check for fund intro keywords
+    ElseIf InStr(subject, "fund") > 0 Or InStr(subject, "introduction") > 0 Or _
+           InStr(subject, "pitch") > 0 Or InStr(subject, "strategy") > 0 Then
+        DetermineMeetingType = "Fund Introduction"
+        
+    Else
+        DetermineMeetingType = "General"
+    End If
+End Function
+
+Function CallClaudeAPI(prompt As String) As String
+    ' Make API call to Claude
+    ' Similar to your OpenAI integration
+    
+    On Error GoTo ErrorHandler
+    
+    Dim http As Object
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    
+    Dim jsonBody As String
+    jsonBody = "{""model"": ""claude-sonnet-4-20250514"", " & _
+               """max_tokens"": 8000, " & _
+               """messages"": [{""role"": ""user"", ""content"": " & JsonEncode(prompt) & "}]}"
+    
+    ' Make the request
+    http.Open "POST", CLAUDE_API_URL, False
+    http.SetRequestHeader "Content-Type", "application/json"
+    http.SetRequestHeader "x-api-key", CLAUDE_API_KEY
+    http.SetRequestHeader "anthropic-version", "2023-06-01"
+    http.Send jsonBody
+    
+    ' Parse response
+    If http.Status = 200 Then
+        Dim responseText As String
+        responseText = http.responseText
+        
+        ' Extract content from JSON response
+        CallClaudeAPI = ExtractClaudeContent(responseText)
+    Else
+        CallClaudeAPI = "<p style='color: red;'>Error calling Claude API: " & http.Status & " - " & http.responseText & "</p>"
+    End If
+    
+    Set http = Nothing
+    Exit Function
+    
+ErrorHandler:
+    CallClaudeAPI = "<p style='color: red;'>Error: " & Err.Description & "</p>"
+End Function
+
+Function ExtractClaudeContent(jsonResponse As String) As String
+    ' Extract the content text from Claude's JSON response
+    ' Simple parsing - for production use JSON parser library
+    
+    Dim startPos As Long
+    Dim endPos As Long
+    Dim content As String
+    
+    ' Find the "text" field in the first content block
+    startPos = InStr(jsonResponse, """text"":""") + 8
+    
+    If startPos > 8 Then
+        ' Find the end quote
+        endPos = InStr(startPos, jsonResponse, """,""type""")
+        If endPos = 0 Then endPos = InStr(startPos, jsonResponse, """}]")
+        
+        If endPos > startPos Then
+            content = Mid(jsonResponse, startPos, endPos - startPos)
+            ' Unescape JSON strings
+            content = Replace(content, "\n", vbCrLf)
+            content = Replace(content, "\""", """")
+            content = Replace(content, "\\", "\")
+            ExtractClaudeContent = content
+        End If
+    End If
+    
+    If Len(ExtractClaudeContent) = 0 Then
+        ExtractClaudeContent = "<p>Unable to parse Claude response</p>"
+    End If
+End Function
+
+Function JsonEncode(text As String) As String
+    ' Simple JSON string encoding
+    Dim result As String
+    result = text
+    result = Replace(result, "\", "\\")
+    result = Replace(result, """", "\""")
+    result = Replace(result, vbCrLf, "\n")
+    result = Replace(result, vbCr, "\n")
+    result = Replace(result, vbLf, "\n")
+    result = Replace(result, vbTab, "\t")
+    JsonEncode = """" & result & """"
+End Function
+
+Function GetAttendeeList(appt As Outlook.AppointmentItem) As String
+    ' Build comma-separated list of attendees
+    
+    Dim recipient As Outlook.recipient
+    Dim attendeeList As String
+    
+    For Each recipient In appt.Recipients
+        If Len(attendeeList) > 0 Then attendeeList = attendeeList & ", "
+        attendeeList = attendeeList & recipient.Name
+    Next recipient
+    
+    GetAttendeeList = attendeeList
+End Function
+
+Sub SendBriefingEmail(briefingsHTML As String, meetingCount As Integer)
+    Dim olApp As Outlook.Application
+    Dim olMail As Outlook.MailItem
+    
+    Set olApp = Outlook.Application
+    Set olMail = olApp.CreateItem(olMailItem)
+    
+    With olMail
+        .To = "ahemmingsen@horvitz.com"  ' Put your email address here
+        .subject = "Weekly Meeting Briefings - " & meetingCount & " Meetings - Week of " & Format(Date, "mmmm dd, yyyy")
+        .HTMLBody = briefingsHTML
+        .Send  ' Sends automatically
+    End With
+    
+    Set olMail = Nothing
+    Set olApp = Nothing
+End Sub
+
